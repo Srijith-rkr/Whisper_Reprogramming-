@@ -129,7 +129,7 @@ def load_model(name: str, device: Optional[Union[str, torch.device]] = None, dow
     else:
         dims = ModelDimensions(**checkpoint["dims"])
         model = Whisper(dims)
-        model.load_state_dict(checkpoint["model_state_dict"]) 
+        model.load_state_dict(checkpoint["model_state_dict"],strict = False) # made strict = False as I added noise matrix
         return model.to(device) 
     
     # when you are creating a new model now (and you want to use the old models weights on some point) we can use
