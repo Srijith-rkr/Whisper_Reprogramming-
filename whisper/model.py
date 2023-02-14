@@ -10,6 +10,7 @@ from torch import nn
 
 from .transcribe import transcribe as transcribe_function
 from .decoding import detect_language as detect_language_function, decode as decode_function
+from .tokenizer import Tokenizer, get_tokenizer
 
 
 @dataclass
@@ -52,6 +53,22 @@ def sinusoids(length, channels, max_timescale=10000):
     inv_timescales = torch.exp(-log_timescale_increment * torch.arange(channels // 2))
     scaled_time = torch.arange(length)[:, np.newaxis] * inv_timescales[np.newaxis, :]
     return torch.cat([torch.sin(scaled_time), torch.cos(scaled_time)], dim=1)
+
+def get_label_mapping_matrix():
+    enclosed_tokenizer = get_tokenizer(multilingual =True)
+    language_tokens_id = list(enclosed_tokenizer.all_language_tokens)
+    label_mapping_matrix = torch.zeros(size=[1,51865,17],requires_grad=False)
+    labels_per_dialect = len(language_tokens_id)/17 # happy mistake over here!! ; if it was // as planned before everything would have 5 and last would have 19
+    
+    for n,r in enumerate(language_tokens_id):
+        c = int( (n-n%labels_per_dialect )/labels_per_dialect   )
+        
+        if c > label_mapping_matrix.shape[-1] - 1:
+            c = label_mapping_matrix.shape[-1] - 1
+
+        label_mapping_matrix[:,r,c] = 1 # dtype is float32 by defaule . dw :)
+    return label_mapping_matrix
+
 
 
 class MultiHeadAttention(nn.Module):
@@ -132,9 +149,12 @@ class ResidualAttentionBlock(nn.Module):
 class AudioEncoder(nn.Module):
     def __init__(self, n_mels: int, n_ctx: int, n_state: int, n_head: int, n_layer: int):
         super().__init__()
+        self.noise_matrix = nn.Parameter(  torch.normal(size = [80, 3000], mean=0.35, std=0.35),   requires_grad=True) # you handel the dtype insided the forward pass
         self.conv1 = Conv1d(n_mels, n_state, kernel_size=3, padding=1) # torch.nn.Conv1d(in_channels, out_channels) convers from 80 channesl (from mel spectogram) to 512 channelsl (given by n_audio_state)
         self.conv2 = Conv1d(n_state, n_state, kernel_size=3, stride=2, padding=1) 
         self.register_buffer("positional_embedding", sinusoids(n_ctx, n_state))
+        
+        
 
         self.blocks: Iterable[ResidualAttentionBlock] = nn.ModuleList(
             [ResidualAttentionBlock(n_state, n_head) for _ in range(n_layer)] # notice that cross attention in RAB is false in encoder but true in decoder 
@@ -145,7 +165,8 @@ class AudioEncoder(nn.Module):
         """
         x : torch.Tensor, shape = (batch_size, n_mels, n_ctx)
             the mel spectrogram of the audio
-        """ # x shape : 1 80 3000
+        """ # x shape : 1 80 3000 is before the conovlution layers
+        x = (x + self.noise_matrix).to(x.dtype)
         x = F.gelu(self.conv1(x)) # x shape : 1 512 3000
         x = F.gelu(self.conv2(x)) # # x shape : 1 512 1500 batch state/channels timestep
         x = x.permute(0, 2, 1) # batch timestep state/channels 1 1500 512
@@ -174,14 +195,19 @@ class TextDecoder(nn.Module):
 
         mask = torch.empty(n_ctx, n_ctx).fill_(-np.inf).triu_(1) # looks like n_ctx is the number of words the modle can predict.  The mask is built for causual attention by having the upper triangle full of -inf values
         self.register_buffer("mask", mask, persistent=False)
+        self.register_buffer("label_mapping_matrix", get_label_mapping_matrix(), persistent=True)
+        
+        
 
-    def forward(self, x: Tensor, xa: Tensor, kv_cache: Optional[dict] = None):
+    def forward(self, x: Tensor, xa: Tensor, kv_cache: Optional[dict] = None, map_labels = False):
         """
         x : torch.LongTensor, shape = (batch_size, <= n_ctx)
             the text tokens
         xa : torch.Tensor, shape = (batch_size, n_mels, n_audio_ctx)    ISN'T IT BATCH, TIMESTEP, AUDIO STATE 
             the encoded audio features to be attended on
         """
+        
+        
         offset = next(iter(kv_cache.values())).shape[1] if kv_cache else 0
         x = self.token_embedding(x) + self.positional_embedding[offset : offset + x.shape[-1]] # adding token and positional embedding to the sot token
         x = x.to(xa.dtype)
@@ -191,7 +217,12 @@ class TextDecoder(nn.Module):
 
         x = self.ln(x)
         logits = (x @ torch.transpose(self.token_embedding.weight.to(x.dtype), 0, 1)).float()
-
+        
+        label_mapped_logits = logits @ self.label_mapping_matrix
+        
+        if map_labels:
+            return label_mapped_logits
+        
         return logits
 
 
