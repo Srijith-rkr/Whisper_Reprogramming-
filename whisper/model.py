@@ -133,7 +133,8 @@ class ResidualAttentionBlock(nn.Module):
         self.mlp_ln = LayerNorm(n_state)
         
         self.add_adapter = add_adapter
-        self.adapter = nn.Sequential(Linear(n_state, n_state//2), nn.GELU(), Linear(n_state//2, n_state))
+        if self.add_adapter:
+            self.adapter = nn.Sequential(Linear(n_state, n_state//2), nn.GELU(), Linear(n_state//2, n_state))
 
     def forward(
         self,
