@@ -119,9 +119,9 @@ class MultiHeadAttention(nn.Module):
 
 
 class ResidualAttentionBlock(nn.Module):
-    def __init__(self, n_state: int, n_head: int, cross_attention: bool = False):
+    def __init__(self, n_state: int, n_head: int, cross_attention: bool = False, add_adapter: bool = False):
         super().__init__()
-
+        
         self.attn = MultiHeadAttention(n_state, n_head)
         self.attn_ln = LayerNorm(n_state)
 
@@ -131,6 +131,9 @@ class ResidualAttentionBlock(nn.Module):
         n_mlp = n_state * 4
         self.mlp = nn.Sequential(Linear(n_state, n_mlp), nn.GELU(), Linear(n_mlp, n_state))
         self.mlp_ln = LayerNorm(n_state)
+        
+        self.add_adapter = add_adapter
+        self.adapter = nn.Sequential(Linear(n_state, n_state//2), nn.GELU(), Linear(n_state//2, n_state))
 
     def forward(
         self,
@@ -143,12 +146,17 @@ class ResidualAttentionBlock(nn.Module):
         if self.cross_attn:
             x = x + self.cross_attn(self.cross_attn_ln(x), xa, kv_cache=kv_cache)[0]
         x = x + self.mlp(self.mlp_ln(x))
+        if self.add_adapter: 
+            x = x + self.adapter(x)
         return x
 
 
 class AudioEncoder(nn.Module):
-    def __init__(self, n_mels: int, n_ctx: int, n_state: int, n_head: int, n_layer: int):
+    def __init__(self, n_mels: int, n_ctx: int, n_state: int, n_head: int, n_layer: int,add_adapter: bool = False):
         super().__init__()
+        
+        self.add_adapter = add_adapter
+        
         self.noise_matrix = nn.Parameter(  torch.normal(size = [80, 3000], mean=0.35, std=0.35),   requires_grad=True) # you handel the dtype insided the forward pass
         self.conv1 = Conv1d(n_mels, n_state, kernel_size=3, padding=1) # torch.nn.Conv1d(in_channels, out_channels) convers from 80 channesl (from mel spectogram) to 512 channelsl (given by n_audio_state)
         self.conv2 = Conv1d(n_state, n_state, kernel_size=3, stride=2, padding=1) 
@@ -157,7 +165,7 @@ class AudioEncoder(nn.Module):
         
 
         self.blocks: Iterable[ResidualAttentionBlock] = nn.ModuleList(
-            [ResidualAttentionBlock(n_state, n_head) for _ in range(n_layer)] # notice that cross attention in RAB is false in encoder but true in decoder 
+            [ResidualAttentionBlock(n_state, n_head, add_adapter=self.add_adapter) for _ in range(n_layer)] # notice that cross attention in RAB is false in encoder but true in decoder 
         )
         self.ln_post = LayerNorm(n_state)
 
@@ -227,15 +235,18 @@ class TextDecoder(nn.Module):
 
 
 class Whisper(nn.Module):
-    def __init__(self, dims: ModelDimensions): #ModelDimensions is a dataclass that contains all the needed parameters as objects
+    def __init__(self, dims: ModelDimensions, add_adapter: bool = False): #ModelDimensions is a dataclass that contains all the needed parameters as objects
         super().__init__()
         self.dims = dims
+        self.add_adapter = add_adapter
+        
         self.encoder = AudioEncoder(
             self.dims.n_mels,
             self.dims.n_audio_ctx,
             self.dims.n_audio_state,
             self.dims.n_audio_head,
             self.dims.n_audio_layer,
+            add_adapter=self.add_adapter
         )
         self.decoder = TextDecoder(
             self.dims.n_vocab,
