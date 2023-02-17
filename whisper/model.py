@@ -205,7 +205,7 @@ class AudioEncoder(nn.Module):
         assert x.shape[1:] == self.positional_embedding.shape, "incorrect audio shape"
         x = (x + self.positional_embedding).to(x.dtype)
         
-        prev_rep_x = torch.zeros(size=x.shape, requires_grad=False).to(x.dtype)
+        prev_rep_x = torch.zeros(size=x.shape, requires_grad=False).to(x.dtype).to(x.device)
         for block in self.blocks:
             if self.add_bridge:
                 x, rep_X = block(x, prev_rep_X =prev_rep_x) # notice prev_rep_[X|x] # X is parameter name; x is to pass the arguments
