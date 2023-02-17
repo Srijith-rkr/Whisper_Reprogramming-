@@ -11,7 +11,7 @@ TIME_LIST = ["begintimestamp"] # <|begintimestamp|> , '<|0.02|>' . . '<|29.98|>'
 for i in range(1,1501): # you start form 1 because <|begintimestamp|> and <0.0> are equivalent; remember range(1501) generates 0,1...1500
     TIME_LIST.append(str(round(i*(20/1000),2)))
     
-#DIALECTS = ['ALG','EGY','IRA','JOR','KSA','KUW','LEB','LIB','MAU','MOR','OMA','PAL','QAT','SUD','SYR','UAE','YEM']
+DIALECTS = []#['ALG','EGY','IRA','JOR','KSA','KUW','LEB','LIB','MAU','MOR','OMA','PAL','QAT','SUD','SYR','UAE','YEM']
 
 #ALG  EGY  IRA  JOR  KSA  KUW  LEB  LIB  MAU  MOR  OMA  PAL  QAT  send1.zip  send2.zip  send3.zip  send4.zip  SUD  SYR  UAE  YEM
 
@@ -226,7 +226,7 @@ class Tokenizer:
             self.tokenizer.additional_special_tokens,
             self.tokenizer.additional_special_tokens_ids,
         ):
-            if (token.strip("<|>") in LANGUAGES) :#or (token.strip("<|>") in DIALECTS) :#:or DIALECTS: # modified function to include dailects as well 
+            if (token.strip("<|>") in LANGUAGES) or (token.strip("<|>") in DIALECTS) :#:or DIALECTS: # modified function to include dailects as well 
                 result.append(token_id)
         return tuple(result)
 

@@ -71,7 +71,7 @@ def available_models() -> List[str]:
     return list(_MODELS.keys())
 
 
-def load_model(name: str, device: Optional[Union[str, torch.device]] = None, download_root: str = None, in_memory: bool = False, custom: bool = False, adapter: bool = False,num_dialects = 3) -> Whisper:
+def load_model(name: str, device: Optional[Union[str, torch.device]] = None, download_root: str = None, in_memory: bool = False, custom: bool = False, adapter: bool = False, adapter_dims: int = 256, bridge: bool = False, num_dialects = 3) -> Whisper:
     """
     Load a Whisper ASR model
 
@@ -134,7 +134,7 @@ def load_model(name: str, device: Optional[Union[str, torch.device]] = None, dow
         
     else:
         dims = ModelDimensions(**checkpoint["dims"])
-        model = Whisper(dims,add_adapter=adapter)
+        model = Whisper(dims, add_adapter=adapter, adapter_dim=adapter_dims, add_bridge=bridge)
         model.load_state_dict(checkpoint["model_state_dict"],strict = False) # made strict = False as I added noise matrix
         return model.to(device) 
     

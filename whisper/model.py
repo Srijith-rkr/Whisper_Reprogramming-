@@ -119,8 +119,12 @@ class MultiHeadAttention(nn.Module):
 
 
 class ResidualAttentionBlock(nn.Module):
-    def __init__(self, n_state: int, n_head: int, cross_attention: bool = False, add_adapter: bool = False):
+    def __init__(self, n_state: int, n_head: int, cross_attention: bool = False, add_adapter: bool = False, adapter_dim: int = 256, add_bridge: bool = False, ):
         super().__init__()
+        
+        if add_bridge and (not add_adapter):
+            print("cannot have briges without adapter")
+            return
         
         self.attn = MultiHeadAttention(n_state, n_head)
         self.attn_ln = LayerNorm(n_state)
@@ -133,9 +137,12 @@ class ResidualAttentionBlock(nn.Module):
         self.mlp_ln = LayerNorm(n_state)
         
         self.add_adapter = add_adapter
+        self.add_bridge = add_bridge
+        
         if self.add_adapter:
-            self.adapter = nn.Sequential(Linear(n_state, n_state//2), nn.GELU(), Linear(n_state//2, n_state))
+            self.adapter = nn.Sequential(Linear(n_state, adapter_dim), nn.GELU(), Linear(adapter_dim, n_state))
             self.adapter_ln = LayerNorm(n_state)
+            self.prev_rep_X_ln = LayerNorm(n_state)
 
     def forward(
         self,
@@ -143,21 +150,35 @@ class ResidualAttentionBlock(nn.Module):
         xa: Optional[Tensor] = None,
         mask: Optional[Tensor] = None,
         kv_cache: Optional[dict] = None,
+        prev_rep_X: Optional[Tensor] = None,
     ):
         x = x + self.attn(self.attn_ln(x), mask=mask, kv_cache=kv_cache)[0]
         if self.cross_attn:
             x = x + self.cross_attn(self.cross_attn_ln(x), xa, kv_cache=kv_cache)[0]
         x = x + self.mlp(self.mlp_ln(x))
-        if self.add_adapter: 
-            x = x + self.adapter(self.adapter_ln(x))
-        return x
+        
+        if self.add_bridge: 
+            rep_X = self.adapter( self.adapter_ln(x) + self.prev_rep_X_ln(prev_rep_X ) )
+            x = x + rep_X
+            return x , rep_X
+            
+        elif self.add_adapter: 
+            rep_X = self.adapter(self.adapter_ln(x))
+            x = x + rep_X
+            
+        return x  # return has been placed outside for the decoder
+
+            
+        
 
 
 class AudioEncoder(nn.Module):
-    def __init__(self, n_mels: int, n_ctx: int, n_state: int, n_head: int, n_layer: int,add_adapter: bool = False):
+    def __init__(self, n_mels: int, n_ctx: int, n_state: int, n_head: int, n_layer: int,add_adapter: bool = False, adapter_dim: int = 256, add_bridge: bool = False):
         super().__init__()
         
         self.add_adapter = add_adapter
+        self.adapter_dim = adapter_dim
+        self.add_bridge = add_bridge
         
         self.noise_matrix = nn.Parameter(  torch.normal(size = [80, 3000], mean=0.35, std=0.35),   requires_grad=True) # you handel the dtype insided the forward pass
         self.conv1 = Conv1d(n_mels, n_state, kernel_size=3, padding=1) # torch.nn.Conv1d(in_channels, out_channels) convers from 80 channesl (from mel spectogram) to 512 channelsl (given by n_audio_state)
@@ -167,7 +188,7 @@ class AudioEncoder(nn.Module):
         
 
         self.blocks: Iterable[ResidualAttentionBlock] = nn.ModuleList(
-            [ResidualAttentionBlock(n_state, n_head, add_adapter=self.add_adapter) for _ in range(n_layer)] # notice that cross attention in RAB is false in encoder but true in decoder 
+            [ResidualAttentionBlock(n_state, n_head, add_adapter=self.add_adapter, adapter_dim=self.adapter_dim, add_bridge=self.add_bridge) for _ in range(n_layer)] # notice that cross attention in RAB is false in encoder but true in decoder 
         )
         self.ln_post = LayerNorm(n_state)
 
@@ -183,9 +204,15 @@ class AudioEncoder(nn.Module):
 
         assert x.shape[1:] == self.positional_embedding.shape, "incorrect audio shape"
         x = (x + self.positional_embedding).to(x.dtype)
-
+        
+        prev_rep_x = torch.zeros(size=x.shape, requires_grad=False).to(x.dtype)
         for block in self.blocks:
-            x = block(x)
+            if self.add_bridge:
+                x, rep_X = block(x, prev_rep_X =prev_rep_x) # notice prev_rep_[X|x] # X is parameter name; x is to pass the arguments
+                prev_rep_x = rep_X
+            else:
+                x = block(x)
+            
 
         x = self.ln_post(x)
         return x
@@ -237,10 +264,12 @@ class TextDecoder(nn.Module):
 
 
 class Whisper(nn.Module):
-    def __init__(self, dims: ModelDimensions, add_adapter: bool = False): #ModelDimensions is a dataclass that contains all the needed parameters as objects
+    def __init__(self, dims: ModelDimensions, add_adapter: bool = False,adapter_dim: int = 256, add_bridge: bool = False): #ModelDimensions is a dataclass that contains all the needed parameters as objects
         super().__init__()
         self.dims = dims
         self.add_adapter = add_adapter
+        self.adapter_dim = adapter_dim
+        self.add_bridge = add_bridge
         
         self.encoder = AudioEncoder(
             self.dims.n_mels,
@@ -248,7 +277,9 @@ class Whisper(nn.Module):
             self.dims.n_audio_state,
             self.dims.n_audio_head,
             self.dims.n_audio_layer,
-            add_adapter=self.add_adapter
+            add_adapter=self.add_adapter,
+            adapter_dim=self.adapter_dim,
+            add_bridge=self.add_bridge
         )
         self.decoder = TextDecoder(
             self.dims.n_vocab,
